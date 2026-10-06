@@ -21,7 +21,7 @@ def _is_valid_price(price: Optional[float]) -> bool:
 def position_value_buggy(holdings: Holdings, tradeable_prices: PriceMap) -> float:
     """事故版本（简化）。
 
-    直接复用"当日可交易价格表"来估值。持有但已不可交易（临期/退市/强赎）
+    直接复用"当日可交易价格表"来估值。持有但已不可交易（临期/退市/已退出）
     的品种不在该表中，查不到价格时 continue —— 该笔持仓市值被当作 0。
 
     这是一个乐观的静默错误：不抛异常，却让总市值凭空少了一块。
