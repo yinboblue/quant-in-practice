@@ -13,36 +13,37 @@ from riskguard.snapshots import (
 
 
 def db_with_delisted_entity():
+    # 虚构示例：X007 在旧快照"已公告退出"，新快照中已摘牌消失
     return init_db([
-        ("2026-09-24", "128134", "已公告强赎"),
-        ("2026-09-24", "110000", "正常"),
-        ("2026-09-30", "110000", "正常"),  # 128134 摘牌，新快照消失
+        ("snapshot-1", "X007", "已公告退出"),
+        ("snapshot-1", "A100", "正常"),
+        ("snapshot-2", "A100", "正常"),
     ])
 
 
 class TestSnapshots(unittest.TestCase):
     def test_latest_partition_loses_delisted(self):
         con = db_with_delisted_entity()
-        self.assertIsNone(latest_partition_map(con, "128134"))
+        self.assertIsNone(latest_partition_map(con, "X007"))
 
     def test_last_value_per_entity_recovers(self):
         con = db_with_delisted_entity()
-        self.assertEqual(last_value_per_entity(con, "128134"), "已公告强赎")
+        self.assertEqual(last_value_per_entity(con, "X007"), "已公告退出")
 
     def test_latest_status_still_correct_for_active(self):
         con = init_db([
-            ("2026-09-24", "110000", "正常"),
-            ("2026-09-30", "110000", "正常"),
+            ("snapshot-1", "A100", "正常"),
+            ("snapshot-2", "A100", "正常"),
         ])
-        self.assertEqual(last_value_per_entity(con, "110000"), "正常")
+        self.assertEqual(last_value_per_entity(con, "A100"), "正常")
 
     def test_monitor_flags_disappeared_entities(self):
         con = db_with_delisted_entity()
-        self.assertEqual(codes_missing_in_latest_partition(con), ["128134"])
+        self.assertEqual(codes_missing_in_latest_partition(con), ["X007"])
 
     def test_unknown_entity_is_none(self):
         con = db_with_delisted_entity()
-        self.assertIsNone(last_value_per_entity(con, "999999"))
+        self.assertIsNone(last_value_per_entity(con, "Z999"))
 
 
 if __name__ == "__main__":

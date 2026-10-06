@@ -1,11 +1,10 @@
 """端到端复现事故：错误口径假崩盘 → 误触发熔断砍仓；修复口径恢复正常。
 
-数字对齐真实事故（单位：元）：
-  历史峰值 peak          ≈ 200,500
-  现金 cash              ≈ 48,000（演示用近似）
-  6 只不可交易持仓合计    ≈ 25,900（有真实市值，但被过滤池剔除）
-  全量盯市总资产         ≈ 194,900 → 真实回撤约 -3%
-  过滤池估值（缺失误计0） = 168,994 → 假回撤 -15.7%，击穿 -8%
+为脱敏，所有金额一律不出现，改用"归一化净值指数"（历史峰值 peak = 100）：
+  全量盯市总资产指数 ≈ 97.2 → 真实回撤约 -2.8%（≈ -3%），离熔断线很远
+  过滤池估值（缺失误计0）= 84.3 → 假回撤 -15.7%，击穿 -8% 熔断线
+  其中 6 只被剔除持仓合计 ≈ 12.9 个指数点，被当成 0 凭空抹去
+（相对比例与真实事故一致；示例代码/编号均为虚构，不对应任何真实标的。）
 """
 from __future__ import annotations
 
@@ -27,27 +26,28 @@ from riskguard.valuation import (
     position_value_buggy,
 )
 
-PEAK = 200_500.0
-CASH = 48_000.0
+# 归一化净值指数：历史峰值 = 100
+PEAK = 100.0
+CASH_INDEX = 24.0
 
-# 为让端到端数字严格对齐真实事故，用 shares=1、price=市值的方式构造：
-#   可交易 6 只合计 120,994；持有但被剔除 6 只合计 25,900。
-#   全量盯市总资产 = 48,000 + 120,994 + 25,900 = 194,894（真实回撤 -2.8%≈-3%）
-#   过滤池估值     = 48,000 + 120,994           = 168,994（假回撤  -15.7%）
-def _holding(market_value):
-    # 成本略低于市值，浮盈状态，不影响以市价估值的结论
-    return {"shares": 1, "cost_price": round(market_value * 0.98, 2)}
+# shares=1、price=指数权重的方式构造，让结果严格对齐事故的"相对比例"：
+#   可交易 6 只合计 60.3；持有但被剔除 6 只合计 12.9。
+#   全量盯市指数 = 24.0 + 60.3 + 12.9 = 97.2（真实回撤 -2.8%≈-3%）
+#   过滤池指数   = 24.0 + 60.3        = 84.3（假回撤  -15.7%）
+def _holding(weight):
+    # 成本略低于市值（浮盈状态），不影响以市价估值的结论
+    return {"shares": 1, "cost_price": round(weight * 0.98, 2)}
 
 
-_a_mv = [20_000, 20_000, 20_000, 20_000, 20_000, 20_994]      # 合计 120,994
-_x_mv = [4_000, 4_200, 4_300, 4_400, 4_500, 4_500]            # 合计 25,900
+_a_w = [10.0, 10.0, 10.0, 10.0, 10.0, 10.3]      # 合计 60.3
+_x_w = [2.0, 2.1, 2.2, 2.2, 2.2, 2.2]            # 合计 12.9
 
-holdings = {f"A{i+1:03d}": _holding(v) for i, v in enumerate(_a_mv)}
-holdings.update({f"X{i+1:03d}": _holding(v) for i, v in enumerate(_x_mv)})
+holdings = {f"A{i+1:03d}": _holding(v) for i, v in enumerate(_a_w)}
+holdings.update({f"X{i+1:03d}": _holding(v) for i, v in enumerate(_x_w)})
 
-# 全量盯市价：12 只都有（盯市含退市/临期品种的最后有效价）。shares=1 → 价格即市值
-mark_prices = {f"A{i+1:03d}": float(v) for i, v in enumerate(_a_mv)}
-mark_prices.update({f"X{i+1:03d}": float(v) for i, v in enumerate(_x_mv)})
+# 全量盯市价：12 只都有（盯市含退市/临期品种的最后有效价）。shares=1 → 价格即权重
+mark_prices = {f"A{i+1:03d}": float(v) for i, v in enumerate(_a_w)}
+mark_prices.update({f"X{i+1:03d}": float(v) for i, v in enumerate(_x_w)})
 
 # 当日"可交易价格表"：X001~X006 被可交易性过滤剔除
 tradeable_prices = {k: v for k, v in mark_prices.items() if k.startswith("A")}
@@ -59,7 +59,7 @@ last_valid = {k: v for k, v in mark_prices.items() if k.startswith("X")}
 def show(title, total):
     dd = drawdown(total, PEAK)
     flag = "🔴 击穿 -8%" if dd <= -0.08 else "🟢 安全"
-    print(f"{title:28s} 总资产={total:>10,.0f}  回撤={dd:+.1%}  {flag}")
+    print(f"{title:26s} 净值指数={total:>6.1f}  回撤={dd:+.1%}  {flag}")
 
 
 def run_fuse(title, total):
@@ -69,16 +69,16 @@ def run_fuse(title, total):
     def sell_to_target(ratio):
         sold["ratio"] = ratio
 
-    ev = check_fuse(total, state, as_of="2026-09-30", sell_to_target=sell_to_target)
+    ev = check_fuse(total, state, as_of="incident-day", sell_to_target=sell_to_target)
     action = f"事件={ev}" + (f"，实际砍仓到 {sold['ratio']:.0%}" if sold else "，无成交")
-    print(f"{title:28s} {action}")
+    print(f"{title:26s} {action}")
     return state
 
 
 def main():
-    print("=" * 72)
-    print("1) 估值口径对比")
-    print("=" * 72)
+    print("=" * 70)
+    print("1) 估值口径对比（归一化净值指数，峰值=100）")
+    print("=" * 70)
     buggy_pos = position_value_buggy(holdings, tradeable_prices)
     fixed_pos = position_value(holdings, tradeable_prices, last_valid)
     full_pos = position_value(holdings, mark_prices)
@@ -86,29 +86,29 @@ def main():
     missing = missing_holdings(holdings, tradeable_prices)
     print(f"持有但被可交易池剔除的品种: {len(missing)} 只 -> {missing}\n")
 
-    show("全量盯市（记账/真实口径）", CASH + full_pos)
-    show("过滤池估值（事故口径）    ", CASH + buggy_pos)
-    show("修复：缺失取最后有效价    ", CASH + fixed_pos)
+    show("全量盯市（记账/真实口径）", CASH_INDEX + full_pos)
+    show("过滤池估值（事故口径）    ", CASH_INDEX + buggy_pos)
+    show("修复：缺失取最后有效价    ", CASH_INDEX + fixed_pos)
 
-    print("\n被凭空抹去的持仓市值 = {:,.0f} 元".format(full_pos - buggy_pos))
+    print("\n被凭空抹去的持仓权重 = {:.1f} 个指数点".format(full_pos - buggy_pos))
 
-    print("\n" + "=" * 72)
-    print("2) 熔断状态机：同一账户，不同输入")
-    print("=" * 72)
-    run_fuse("事故口径（假 -15.7%）", CASH + buggy_pos)
-    run_fuse("修复口径（真实 -3%）  ", CASH + fixed_pos)
+    print("\n" + "=" * 70)
+    print("2) 熔断状态机：同一组合，不同输入")
+    print("=" * 70)
+    run_fuse("事故口径（假 -15.7%）", CASH_INDEX + buggy_pos)
+    run_fuse("修复口径（真实 -3%）  ", CASH_INDEX + fixed_pos)
 
-    print("\n" + "=" * 72)
-    print("3) 全量快照：摘牌实体从最新分区消失")
-    print("=" * 72)
+    print("\n" + "=" * 70)
+    print("3) 全量快照：摘牌实体从最新分区消失（代码均为虚构示例）")
+    print("=" * 70)
     con = init_db([
-        ("2026-09-24", "128134", "已公告强赎"),
-        ("2026-09-24", "110000", "正常"),
-        ("2026-09-30", "110000", "正常"),   # 128134 已摘牌，不再出现在新快照
+        ("snapshot-1", "X007", "已公告退出"),
+        ("snapshot-1", "A100", "正常"),
+        ("snapshot-2", "A100", "正常"),   # X007 已摘牌，不再出现在新快照
     ])
-    print("只取最新分区  -> 128134 状态:", latest_partition_map(con, "128134"),
-          " (查不到，到期强平逻辑永不触发)")
-    print("按实体取末值  -> 128134 状态:", last_value_per_entity(con, "128134"),
+    print("只取最新分区  -> X007 状态:", latest_partition_map(con, "X007"),
+          " (查不到，到期退出逻辑永不触发)")
+    print("按实体取末值  -> X007 状态:", last_value_per_entity(con, "X007"),
           " (正确找回，可执行退出)")
     print("监控：最新分区消失的实体 ->", codes_missing_in_latest_partition(con))
 
